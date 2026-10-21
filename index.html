@@ -1,0 +1,149 @@
+<!DOCTYPE html><html lang="fa" dir="rtl"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>سیگنال یار</title>
+<style>
+:root{--bg:#0f1420;--card:#1a2133;--tx:#e8ecf5;--mut:#8b95ad;--g:#22c55e;--r:#ef4444;--y:#f59e0b}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--tx);font-family:system-ui,Tahoma,sans-serif;padding:env(safe-area-inset-top) 12px 20px}
+h1{font-size:18px;margin:14px 0 8px}.tfs{display:flex;gap:6px;margin:8px 0}
+.tfs button{flex:1;padding:9px;border:0;border-radius:8px;background:var(--card);color:var(--mut);font-size:14px}
+.tfs button.on{background:#3b82f6;color:#fff}
+.card{background:var(--card);border-radius:12px;padding:12px;margin:8px 0}
+.row{display:flex;justify-content:space-between;align-items:center}
+.sym{font-weight:700;font-size:16px;direction:ltr}.price{direction:ltr;color:var(--mut)}
+.tag{padding:4px 12px;border-radius:20px;font-weight:700;font-size:13px}
+.BUY{background:#22c55e22;color:var(--g)}.SELL{background:#ef444422;color:var(--r)}.WAIT{background:#8b95ad22;color:var(--mut)}
+.det{font-size:12px;color:var(--mut);margin-top:8px;direction:ltr;text-align:left;line-height:1.7}
+.alert{border-right:4px solid var(--y)}.alert.hi{border-color:var(--r)}
+small{color:var(--mut)}.warn{color:var(--y);font-size:12px;margin-top:6px}
+.ok{color:var(--g);font-size:12px;margin-top:6px}.weak{opacity:.6}
+label{font-size:13px;color:var(--mut)}
+</style></head><body>
+<h1>📊 سیگنال یار <small id="upd"></small></h1>
+<div class="tfs" id="tfs"></div>
+<label><input type="checkbox" id="onlyok" checked> فقط سیگنال‌های تایید‌شده با بک‌تست (برد ≥ ۶۰٪)</label>
+<div id="alerts"></div><div id="list"></div>
+<p class="det" style="direction:rtl;text-align:right">⚠️ هیچ سیستمی برد تضمینی ندارد. «نرخ برد» در بک‌تست روی داده گذشته است و تضمین آینده نیست. حتماً ابتدا روی حساب دمو استفاده کنید.</p>
+<script>
+const TFS={"1m":["1m","1m","5d"],"5m":["5m","5m","1mo"],"15m":["15m","15m","1mo"],"1h":["1h","60m","3mo"],"1d":["1d","1d","2y"]};
+const HTF={"1m":"15m","5m":"1h","15m":"1h","1h":"1d","1d":null};
+const SYMS=[
+{n:"XAUUSD",t:"f",y:"GC=F",cur:["USD"]},
+{n:"BTCUSDT",t:"c",cur:["BTC"]},{n:"ETHUSDT",t:"c",cur:["ETH"]},{n:"BNBUSDT",t:"c",cur:["BNB"]},
+{n:"SOLUSDT",t:"c",cur:["SOL"]},{n:"XRPUSDT",t:"c",cur:["XRP"]},
+{n:"EURUSD",t:"f",y:"EURUSD=X",cur:["EUR","USD"]},{n:"GBPUSD",t:"f",y:"GBPUSD=X",cur:["GBP","USD"]},
+{n:"USDJPY",t:"f",y:"USDJPY=X",cur:["USD","JPY"]},{n:"USDCHF",t:"f",y:"USDCHF=X",cur:["USD","CHF"]},
+{n:"AUDUSD",t:"f",y:"AUDUSD=X",cur:["AUD","USD"]},{n:"USDCAD",t:"f",y:"USDCAD=X",cur:["USD","CAD"]}];
+const PROFILES=[[1,1.5],[1.2,1.2],[1.5,1.2],[2,1.5]]; // [TP,SL] in ATR
+let tf="5m",prev={},events=[],notified={};
+const $=id=>document.getElementById(id);
+$("tfs").innerHTML=Object.keys(TFS).map(k=>`<button data-k="${k}" class="${k==tf?"on":""}">${k}</button>`).join("");
+$("tfs").onclick=e=>{if(e.target.dataset.k){tf=e.target.dataset.k;[...$("tfs").children].forEach(b=>b.classList.toggle("on",b.dataset.k==tf));run()}};
+$("onlyok").onchange=()=>run();
+async function j(u){const r=await fetch(u);return typeof r.json=="function"?r.json():r}
+async function candles(s,k){
+ if(s.t=="c"){const d=await j(`https://api.binance.com/api/v3/klines?symbol=${s.n}&interval=${TFS[k][0]}&limit=1000`);
+  return{t:d.map(x=>+x[0]),o:d.map(x=>+x[1]),h:d.map(x=>+x[2]),l:d.map(x=>+x[3]),c:d.map(x=>+x[4])}}
+ const d=await j(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(s.y)}?interval=${TFS[k][1]}&range=${TFS[k][2]}`);
+ const R=d.chart.result[0],q=R.indicators.quote[0],o={t:[],o:[],h:[],l:[],c:[]};
+ R.timestamp.forEach((ts,i)=>{if(q.close[i]!=null&&q.high[i]!=null&&q.open[i]!=null){o.t.push(ts*1e3);o.o.push(q.open[i]);o.h.push(q.high[i]);o.l.push(q.low[i]);o.c.push(q.close[i])}});return o}
+/* ---------- indicators (full arrays) ---------- */
+const ema=(a,p)=>{const k=2/(p+1);let e=a[0];return a.map(v=>e=v*k+e*(1-k))};
+function rsiA(a,p=14){const n=a.length,o=Array(n).fill(50);let g=0,l=0;
+ for(let i=1;i<n;i++){const d=a[i]-a[i-1],G=Math.max(d,0),L=Math.max(-d,0);
+  if(i<=p){g+=G/p;l+=L/p}else{g=(g*(p-1)+G)/p;l=(l*(p-1)+L)/p}
+  if(i>=p)o[i]=l==0?100:100-100/(1+g/l)}return o}
+function atrA(h,l,c,p=14){const n=c.length,o=Array(n).fill(0);let a=0;
+ for(let i=1;i<n;i++){const t=Math.max(h[i]-l[i],Math.abs(h[i]-c[i-1]),Math.abs(l[i]-c[i-1]));a=i<=p?a+t/p:(a*(p-1)+t)/p;o[i]=a}return o}
+function adxA(h,l,c,p=14){const n=c.length,o=Array(n).fill(0);let tr=0,pd=0,md=0,adx=0;
+ for(let i=1;i<n;i++){const up=h[i]-h[i-1],dn=l[i-1]-l[i],t=Math.max(h[i]-l[i],Math.abs(h[i]-c[i-1]),Math.abs(l[i]-c[i-1]));
+  const P=up>dn&&up>0?up:0,M=dn>up&&dn>0?dn:0;
+  if(i<=p){tr+=t;pd+=P;md+=M}else{tr=tr-tr/p+t;pd=pd-pd/p+P;md=md-md/p+M}
+  if(i>=p){const a=100*pd/tr,b=100*md/tr,dx=100*Math.abs(a-b)/((a+b)||1);adx=i<2*p?adx+dx/p:(adx*(p-1)+dx)/p;o[i]=adx}}return o}
+function build(d){const c=d.c,n=c.length,e12=ema(c,12),e26=ema(c,26),m=e12.map((v,i)=>v-e26[i]),sg=ema(m,9);
+ const ll=[],hh=[];for(let i=0;i<n;i++){const a=Math.max(0,i-13);ll.push(Math.min(...d.l.slice(a,i+1)));hh.push(Math.max(...d.h.slice(a,i+1)))}
+ const K=c.map((v,i)=>100*(v-ll[i])/((hh[i]-ll[i])||1)),Ks=K.map((_,i)=>(K[i]+(K[i-1]??K[i])+(K[i-2]??K[i]))/3);
+ const sma=[],sd=[];for(let i=0;i<n;i++){const w=c.slice(Math.max(0,i-19),i+1),mu=w.reduce((x,y)=>x+y,0)/w.length;sma.push(mu);sd.push(Math.sqrt(w.reduce((x,y)=>x+(y-mu)**2,0)/w.length))}
+ return{...d,n,e20:ema(c,20),e50:ema(c,50),e200:ema(c,200),rsi:rsiA(c),atr:atrA(d.h,d.l,c),adx:adxA(d.h,d.l,c),
+  mh:m.map((v,i)=>v-sg[i]),k:Ks,bu:sma.map((v,i)=>v+2*sd[i]),bl:sma.map((v,i)=>v-2*sd[i])}}
+/* ---------- scoring at bar i (+ = buy, - = sell) ---------- */
+function score(x,i,crypto){
+ const c=x.c[i],a=x.atr[i],w=[];let s=0;const add=(v,t)=>{s+=v;w.push((v>0?"+":"")+v+" "+t)};
+ if(i<210||!a)return{s:0,w,ok:false};
+ const up=x.e20[i]>x.e50[i]&&x.e50[i]>x.e200[i],dn=x.e20[i]<x.e50[i]&&x.e50[i]<x.e200[i];
+ if(up)add(2,"EMA stack ↑");else if(dn)add(-2,"EMA stack ↓");
+ const tr=up?1:dn?-1:0;
+ if(x.mh[i]>0&&x.mh[i]>x.mh[i-1])add(1,"MACD momentum ↑");else if(x.mh[i]<0&&x.mh[i]<x.mh[i-1])add(-1,"MACD momentum ↓");
+ const r=x.rsi[i];
+ if(tr>0&&r<48&&r>x.rsi[i-1])add(1.5,"pullback RSI "+r.toFixed(0));
+ if(tr<0&&r>52&&r<x.rsi[i-1])add(-1.5,"pullback RSI "+r.toFixed(0));
+ if(r<25)add(1,"RSI oversold");if(r>75)add(-1,"RSI overbought");
+ if(x.k[i]>x.k[i-1]&&x.k[i-1]<25)add(1,"Stoch turn ↑");if(x.k[i]<x.k[i-1]&&x.k[i-1]>75)add(-1,"Stoch turn ↓");
+ if(x.l[i]<x.bl[i]&&c>x.bl[i])add(1,"BB reclaim");if(x.h[i]>x.bu[i]&&c<x.bu[i])add(-1,"BB reject");
+ const o=x.o[i],pc=x.c[i-1],po=x.o[i-1],body=Math.abs(c-o),rng=x.h[i]-x.l[i]||1;
+ if(c>o&&pc<po&&c>po&&o<pc)add(1.5,"Bull engulfing");if(c<o&&pc>po&&c<po&&o>pc)add(-1.5,"Bear engulfing");
+ const lw=Math.min(o,c)-x.l[i],uw=x.h[i]-Math.max(o,c);
+ if(lw>2*body&&lw>.6*rng)add(1.5,"Pin bar ↑");if(uw>2*body&&uw>.6*rng)add(-1.5,"Pin bar ↓");
+ let lo=1e18,hi=-1e18;for(let k=i-50;k<i;k++){lo=Math.min(lo,x.l[k]);hi=Math.max(hi,x.h[k])}
+ if(c-lo<.6*a)add(1,"near support");if(hi-c<.6*a)add(-1,"near resistance");
+ const hr=new Date(x.t[i]).getUTCHours(),sess=crypto||(hr>=7&&hr<=20);
+ return{s,w,ok:x.adx[i]>=20&&sess,adx:x.adx[i],sess}}
+const THR=4;
+/* ---------- backtest ---------- */
+function backtest(x,crypto){
+ const res=PROFILES.map(([tp,sl])=>{let W=0,L=0,R=0,i=210;
+  while(i<x.n-2){const q=score(x,i,crypto);
+   if(q.ok&&Math.abs(q.s)>=THR){const d=q.s>0?1:-1,a=x.atr[i],e=x.c[i],T=e+d*tp*a,S=e-d*sl*a;let out=0;
+    let j=i+1;for(;j<Math.min(x.n,i+61);j++){const hitS=d>0?x.l[j]<=S:x.h[j]>=S,hitT=d>0?x.h[j]>=T:x.l[j]<=T;
+     if(hitS){out=-1;break}if(hitT){out=1;break}}
+    if(out==1){W++;R+=tp/sl-.1/sl}else if(out==-1){L++;R-=1+.1/sl}i=j+1}else i++}
+  const n=W+L;return{tp,sl,n,wr:n?W/n:0,exp:n?R/n:0}});
+ const good=res.filter(r=>r.n>=15&&r.wr>=.6&&r.exp>0).sort((a,b)=>b.exp-a.exp);
+ return{best:good[0]||res.filter(r=>r.n>=5).sort((a,b)=>b.exp-a.exp)[0]||res[0],valid:!!good[0]}}
+/* ---------- analysis per symbol ---------- */
+async function analyze(s){
+ const crypto=s.t=="c",x=build(await candles(s,tf)),n=x.n,i=n-1,q=score(x,i,crypto),bt=backtest(x,crypto);
+ let htf=0;if(HTF[tf]){try{const h=build(await candles(s,HTF[tf])),m=h.n-1;
+  htf=h.e20[m]>h.e50[m]&&h.c[m]>h.e50[m]?1:h.e20[m]<h.e50[m]&&h.c[m]<h.e50[m]?-1:0}catch(e){}}
+ const d=q.s>0?1:-1,p=x.c[i],a=x.atr[i];let sig="WAIT",why=[...q.w],blk=[];
+ if(Math.abs(q.s)>=THR){
+  if(!q.ok){blk.push(q.adx<20?"ADX<20 (بازار رنج)":"خارج از سشن لندن/نیویورک")}
+  else if(HTF[tf]&&htf&&htf!=d)blk.push("خلاف روند تایم‌فریم بالاتر "+HTF[tf]);
+  else sig=d>0?"BUY":"SELL"}
+ if(sig!="WAIT"&&events.some(e=>e.hi&&e.soon&&e.cur.some(c=>s.cur.includes(c)))){sig="WAIT";blk.push("خبر مهم ≤۳۰ دقیقه")}
+ const P=bt.best;
+ return{p,sig,score:q.s,why,blk,htf,bt:P,valid:bt.valid,
+  sl:sig=="WAIT"?null:p-d*P.sl*a,tp:sig=="WAIT"?null:p+d*P.tp*a,adx:q.adx}}
+const f=v=>v==null?"-":v>=100?v.toFixed(2):v>=1?v.toFixed(4):v.toFixed(5);
+async function loadNews(){
+ events=[];const now=Date.now();
+ try{const cal=await j("https://nfs.faireconomy.media/ff_calendar_thisweek.json");
+  cal.filter(e=>e.impact=="High").forEach(e=>{const dm=(new Date(e.date).getTime()-now)/6e4;
+   if(dm>-30&&dm<240)events.push({hi:1,soon:Math.abs(dm)<=30,cur:[e.country],txt:`${e.country} — ${e.title} ${dm>0?"تا "+Math.round(dm)+" دقیقه دیگر":"منتشر شد"}`,id:e.title+e.date})})}catch(e){}
+ try{const nw=await j("https://min-api.cryptocompare.com/data/v2/news/?lang=EN");
+  const kw=/\b(sec|hack|exploit|ban|etf|fed|cpi|lawsuit|liquidat|crash|approval|halving)\b/i;
+  nw.Data.slice(0,30).filter(x=>kw.test(x.title)&&now/1e3-x.published_on<7200).slice(0,4)
+   .forEach(x=>events.push({hi:0,cur:["BTC","ETH","BNB","SOL","XRP"],txt:"🗞 "+x.title,id:x.id}))}catch(e){}
+ $("alerts").innerHTML=events.map(e=>`<div class="card alert ${e.hi?"hi":""}"><div style="font-size:13px">${e.hi?"🔴":"🟠"} ${e.txt}</div></div>`).join("");
+ events.forEach(e=>{if(!notified[e.id]){notified[e.id]=1;notify("خبر مهم",e.txt)}})}
+async function notify(t,b){try{const L=window.Capacitor&&Capacitor.Plugins.LocalNotifications;
+ if(L){await L.requestPermissions();await L.schedule({notifications:[{title:t,body:b,id:Math.floor(Math.random()*1e9)}]})}
+ else if(window.Notification&&Notification.permission=="granted")new Notification(t,{body:b})}catch(e){}}
+async function run(){
+ $("upd").textContent="⏳";const only=$("onlyok").checked;
+ const res=await Promise.all(SYMS.map(async s=>{try{return{s,a:await analyze(s)}}catch(e){return{s,a:null}}}));
+ $("list").innerHTML=res.map(({s,a})=>{
+  if(!a)return`<div class="card row"><span class="sym">${s.n}</span><small>خطا در دریافت قیمت</small></div>`;
+  let sig=a.sig;if(only&&sig!="WAIT"&&!a.valid)sig="WAIT";
+  const k=s.n+tf;if(sig!="WAIT"&&prev[k]!=sig)notify(`${sig} ${s.n} (${tf})`,`قیمت ${f(a.p)} | SL ${f(a.sl)} | TP ${f(a.tp)}`);prev[k]=sig;
+  const b=a.bt,bl=`بک‌تست: ${b.n} معامله | برد ${(b.wr*100).toFixed(0)}% | TP ${b.tp}×ATR / SL ${b.sl}×ATR | امید ریاضی ${b.exp.toFixed(2)}R`;
+  return`<div class="card ${sig=="WAIT"?"weak":""}"><div class="row"><div><div class="sym">${s.n}</div><div class="price">${f(a.p)}</div></div>
+  <span class="tag ${sig}">${sig=="BUY"?"خرید":sig=="SELL"?"فروش":"صبر"} ${sig!="WAIT"?"("+a.score.toFixed(1)+")":""}</span></div>
+  ${sig!="WAIT"?`<div class="det">SL: ${f(a.sl)} | TP: ${f(a.tp)}</div>`:""}
+  <div class="det">${a.why.join(" · ")||"—"} | ADX ${a.adx.toFixed(0)}</div>
+  <div class="det">${bl}</div>
+  ${a.valid?'<div class="ok">✅ این ستاپ در بک‌تست شرط برد ≥۶۰٪ و سود‌ده بودن را داشت</div>':'<div class="warn">⚠️ در بک‌تست این نماد/تایم‌فریم به برد ≥۶۰٪ با سود مثبت نرسید</div>'}
+  ${a.blk.map(m=>`<div class="warn">⛔ ${m}</div>`).join("")}</div>`}).join("");
+ $("upd").textContent=new Date().toLocaleTimeString("fa-IR");}
+async function loop(){await loadNews();await run()}
+loop();setInterval(loop,60000);
+</script></body></html>
